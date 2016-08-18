@@ -74,6 +74,16 @@ public abstract class SetTests {
     }
 
     @Test
+    public void shouldRetainAllSpecifiedElements() {
+        String[] expected = new String[]{"one", "two"};
+        Set<String> actual = buildSet(Arrays.asList("one", "two", "three"));
+
+        actual.retainAll(Arrays.asList("one", "two"));
+
+        checkSets(expected, actual);
+    }
+
+    @Test
     public void shouldClear() {
         Set<String> set = buildSet(Arrays.asList("one", "two", "three"));
         set.clear();

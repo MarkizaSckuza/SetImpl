@@ -6,14 +6,15 @@ public class HashSet<E> implements Set<E> {
 
     private static final int INITIAL_CAPACITY = 10;
     private static final float DEFAULT_LOAD_FACTOR = 0.75f;
-    private Bucket<E>[] elements;
+
+    private Bucket<E>[] buckets;
     private int size;
     private float loadFactor;
     private int threshold;
     private int modCount;
 
     public HashSet() {
-        elements = new Bucket[INITIAL_CAPACITY];
+        buckets = new Bucket[INITIAL_CAPACITY];
         size = 0;
         loadFactor = DEFAULT_LOAD_FACTOR;
         threshold = (int) (INITIAL_CAPACITY * loadFactor);
@@ -21,7 +22,7 @@ public class HashSet<E> implements Set<E> {
     }
 
     public HashSet(int initialCapacity) {
-        elements = new Bucket[initialCapacity];
+        buckets = new Bucket[initialCapacity];
         size = 0;
         loadFactor = DEFAULT_LOAD_FACTOR;
         threshold = (int) (initialCapacity * loadFactor);
@@ -31,15 +32,6 @@ public class HashSet<E> implements Set<E> {
     public HashSet(Collection<E> collection) {
         this(2 * collection.size());
         addAll(collection);
-    }
-
-    private static int hash(int h) {
-        h ^= (h >>> 20) ^ (h >>> 12);
-        return h ^ (h >>> 7) ^ (h >>> 4);
-    }
-
-    private static int indexFor(int h, int length) {
-        return h & (length - 1);
     }
 
     public int size() {
@@ -54,18 +46,13 @@ public class HashSet<E> implements Set<E> {
 
         int hashCode = o.hashCode();
         int hash = hash(hashCode);
-        int i = indexFor(hash, elements.length);
-        Bucket<E> bucket = elements[i];
+        int i = indexFor(hash, buckets.length);
+        Bucket<E> bucket = buckets[i];
 
-        if (bucket == null || bucket.entries.isEmpty()) {
+        if (bucket == null || bucket.elements.isEmpty()) {
             return false;
         }
-        for (Node<E> node : bucket.entries) {
-            if (node.value.equals(o)) {
-                return true;
-            }
-        }
-        return false;
+        return bucket.elements.stream().anyMatch(node -> node.value.equals(o));
     }
 
     public Iterator iterator() {
@@ -81,9 +68,9 @@ public class HashSet<E> implements Set<E> {
         Object[] array = new Object[size];
 
         int j = 0;
-        for (Bucket<E> element : elements) {
-            if (element != null && !element.entries.isEmpty()) {
-                for (Node<E> node : element.entries) {
+        for (Bucket<E> element : buckets) {
+            if (element != null && !element.elements.isEmpty()) {
+                for (Node node : element.elements) {
                     array[j] = node;
                     j++;
                 }
@@ -105,14 +92,14 @@ public class HashSet<E> implements Set<E> {
 
         int hashCode = o.hashCode();
         int hash = hash(hashCode);
-        int i = indexFor(hash, elements.length);
-        Bucket<E> bucket = elements[i];
+        int i = indexFor(hash, buckets.length);
+        Bucket<E> bucket = buckets[i];
 
         if (bucket != null) {
-            bucket.entries.add(new Node<E>(hashCode, (E) o));
+            bucket.elements.add(new Node(hashCode, (E) o));
         } else {
-            elements[i] = new Bucket<E>(hash);
-            elements[i].entries.add(new Node<E>(hashCode, (E) o));
+            buckets[i] = new Bucket<E>(hash);
+            buckets[i].elements.add(new Node(hashCode, (E) o));
         }
         modCount++;
         return true;
@@ -122,15 +109,15 @@ public class HashSet<E> implements Set<E> {
 
         int hashCode = o.hashCode();
         int hash = hash(hashCode);
-        int i = indexFor(hash, elements.length);
-        Bucket<E> bucket = elements[i];
+        int i = indexFor(hash, buckets.length);
+        Bucket<E> bucket = buckets[i];
 
         if (bucket == null || !contains(o)) {
             return false;
         }
-        for (Node<E> node : bucket.entries) {
+        for (Node node : bucket.elements) {
             if (node.value.equals(o)) {
-                bucket.entries.remove(node);
+                bucket.elements.remove(node);
                 size--;
             }
         }
@@ -156,10 +143,10 @@ public class HashSet<E> implements Set<E> {
     }
 
     public void clear() {
-        if (elements != null && size > 0) {
+        if (buckets != null && size > 0) {
             size = 0;
-            for (int i = 0; i < elements.length; i++) {
-                elements[i] = null;
+            for (int i = 0; i < buckets.length; i++) {
+                buckets[i] = null;
             }
         }
         modCount++;
@@ -169,31 +156,11 @@ public class HashSet<E> implements Set<E> {
         if (!containsAll(c)) {
             return false;
         }
-
-        for (Bucket<E> bucket : elements) {
-            if (bucket != null && !bucket.entries.isEmpty()) {
-                for (Node<E> node : bucket.entries) {
-                    if (c.contains(node.value)) {
-                        remove(node.value);
-                    }
-                }
-            }
-        }
-        return true;
+        return batchRemove(c, true);
     }
 
     public boolean retainAll(Collection<?> c) {
-        for (Bucket<E> bucket : elements) {
-            if (bucket != null && !bucket.entries.isEmpty()) {
-                for (Node<E> node : bucket.entries) {
-                    if (!c.contains(node.value)) {
-                        remove(node);
-                    }
-                }
-
-            }
-        }
-        return false;
+        return batchRemove(c, false);
     }
 
     public boolean containsAll(Collection<?> c) {
@@ -227,7 +194,7 @@ public class HashSet<E> implements Set<E> {
             return false;
         try {
             return containsAll(c);
-        } catch (ClassCastException unused)   {
+        } catch (ClassCastException unused) {
             return false;
         } catch (NullPointerException unused) {
             return false;
@@ -245,30 +212,54 @@ public class HashSet<E> implements Set<E> {
         return h;
     }
 
-    private void resize() {
-        Bucket<E>[] oldElements = elements;
+    private int hash(int h) {
+        h ^= (h >>> 20) ^ (h >>> 12);
+        return h ^ (h >>> 7) ^ (h >>> 4);
+    }
 
-        int newCapacity = elements.length * 2;
+    private int indexFor(int h, int length) {
+        return h & (length - 1);
+    }
+
+    private boolean batchRemove(Collection<?> c, boolean complement) {
+        boolean modified = false;
+
+        for (Bucket<E> bucket : buckets) {
+            if (bucket != null && !bucket.elements.isEmpty()) {
+                for (Node node : bucket.elements) {
+                    if (c.contains(node.value) == complement) {
+                        modified = remove(node.value);
+                    }
+                }
+            }
+        }
+        return modified;
+    }
+
+    private void resize() {
+        Bucket<E>[] oldElements = buckets;
+
+        int newCapacity = buckets.length * 2;
         threshold = (int) (newCapacity * loadFactor);
 
-        elements = new Bucket[newCapacity];
+        buckets = new Bucket[newCapacity];
         transfer(oldElements);
     }
 
     private void resize(int neededSize) {
-        Bucket<E>[] oldElements = elements;
+        Bucket<E>[] oldBuckets = buckets;
 
         int newCapacity = neededSize * 2;
         threshold = (int) (newCapacity * loadFactor);
         size = 0;
-        elements = new Bucket[newCapacity];
-        transfer(oldElements);
+        buckets = new Bucket[newCapacity];
+        transfer(oldBuckets);
     }
 
     private void transfer(Bucket<E>[] oldElements) {
         for (Bucket<E> bucket : oldElements) {
             if (bucket != null) {
-                for (Node<E> node : bucket.entries) {
+                for (Node node : bucket.elements) {
                     add(node.value);
                 }
             }
@@ -279,15 +270,15 @@ public class HashSet<E> implements Set<E> {
     private class Bucket<E> {
 
         private final int hash;
-        private List<Node<E>> entries;
+        private List<Node> elements;
 
         private Bucket(int hash) {
             this.hash = hash;
-            this.entries = new LinkedList<Node<E>>();
+            this.elements = new LinkedList<Node>();
         }
     }
 
-    private class Node<E> {
+    private class Node {
 
         private int hashCode;
         private E value;
@@ -302,7 +293,7 @@ public class HashSet<E> implements Set<E> {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
 
-            Node<?> node = (Node<?>) o;
+            Node node = (Node) o;
 
             if (hashCode != node.hashCode) return false;
             return value != null ? value.equals(node.value) : node.value == null;
@@ -324,20 +315,20 @@ public class HashSet<E> implements Set<E> {
             int i = cursor;
             if (i >= size)
                 throw new NoSuchElementException();
-            Bucket<E>[] elements = HashSet.this.elements;
+            Bucket<E>[] buckets = HashSet.this.buckets;
 
-            if (i >= elements.length) {
+            if (i >= buckets.length) {
                 throw new ConcurrentModificationException();
             }
 
-            if (elements[currentBucketIndex] == null || elements[currentBucketIndex].entries.isEmpty()) {
+            if (buckets[currentBucketIndex] == null || buckets[currentBucketIndex].elements.isEmpty()) {
                 currentBucketIndex++;
                 return next();
             }
 
-            E value = elements[currentBucketIndex].entries.get(currentNode).value;
+            E value = buckets[currentBucketIndex].elements.get(currentNode).value;
 
-            if(elements[currentBucketIndex].entries.size() - 1 == currentNode) {
+            if (buckets[currentBucketIndex].elements.size() - 1 == currentNode) {
                 currentNode = 0;
                 currentBucketIndex++;
             } else {
